@@ -28,6 +28,7 @@
 #include "c1/c1_MacroAssembler.hpp"
 #include "c1/c1_Runtime1.hpp"
 #include "classfile/javaClasses.hpp"
+#include "compiler/oopMap.hpp"
 #include "nativeInst_x86.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "runtime/sharedRuntime.hpp"
@@ -537,53 +538,22 @@ void SimpleExceptionStub::emit_code(LIR_Assembler* ce) {
 
 
 void ArrayCopyStub::emit_code(LIR_Assembler* ce) {
-  //---------------slow case: call to native-----------------
   __ bind(_entry);
-  // Figure out where the args should go
-  // This should really convert the IntrinsicID to the Method* and signature
-  // but I don't know how to do that.
-  //
-  VMRegPair args[5];
-  BasicType signature[5] = { T_OBJECT, T_INT, T_OBJECT, T_INT, T_INT};
-  SharedRuntime::java_calling_convention(signature, args, 5);
 
-  // push parameters
-  // (src, src_pos, dest, destPos, length)
-  Register r[5];
-  r[0] = src()->as_register();
-  r[1] = src_pos()->as_register();
-  r[2] = dst()->as_register();
-  r[3] = dst_pos()->as_register();
-  r[4] = length()->as_register();
+  // Pass the five arraycopy arguments independently of the original bytecode target.
+  ce->store_parameter(src()->as_register(), 0);
+  ce->store_parameter(src_pos()->as_register(), 1);
+  ce->store_parameter(dst()->as_register(), 2);
+  ce->store_parameter(dst_pos()->as_register(), 3);
+  ce->store_parameter(length()->as_register(), 4);
 
-  // next registers will get stored on the stack
-  for (int i = 0; i < 5 ; i++ ) {
-    VMReg r_1 = args[i].first();
-    if (r_1->is_stack()) {
-      int st_off = r_1->reg2stack() * wordSize;
-      __ movptr (Address(rsp, st_off), r[i]);
-    } else {
-      assert(r[i] == args[i].first()->as_Register(), "Wrong register for arg ");
-    }
-  }
+  // Runtime calls do not scan outgoing arguments using the Java call-site signature.
+  info()->oop_map()->set_oop(VMRegImpl::stack2reg(0));
+  info()->oop_map()->set_oop(VMRegImpl::stack2reg(2 * VMRegImpl::slots_per_word));
 
-  ce->align_call(lir_static_call);
-
-  ce->emit_static_call_stub();
-  if (ce->compilation()->bailed_out()) {
-    return; // CodeCache is full
-  }
-  AddressLiteral resolve(SharedRuntime::get_resolve_static_call_stub(),
-                         relocInfo::static_call_type);
-  __ call(resolve);
+  __ call(RuntimeAddress(Runtime1::entry_for(StubId::c1_slow_arraycopy_id)));
   ce->add_call_info_here(info());
-
-#ifndef PRODUCT
-  if (PrintC1Statistics) {
-    __ incrementl(ExternalAddress((address)&Runtime1::_arraycopy_slowcase_cnt), rscratch1);
-  }
-#endif
-
+  ce->verify_oop_map(info());
   __ jmp(_continuation);
 }
 

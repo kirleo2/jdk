@@ -973,6 +973,13 @@ JRT_ENTRY(void, Runtime1::throw_identity_exception(JavaThread* current, oopDesc*
   SharedRuntime::throw_and_post_jvmti_exception(current, vmSymbols::java_lang_IdentityException(), message);
 JRT_END
 
+void Runtime1::slow_arraycopy(JavaThread* current, oopDesc* src, jint src_pos,
+                             oopDesc* dest, jint dest_pos, jint length) {
+  NOT_PRODUCT(_arraycopy_slowcase_cnt++;)
+  // SharedRuntime::slow_arraycopy_C performs the transition into the VM.
+  SharedRuntime::slow_arraycopy_C(src, src_pos, dest, dest_pos, length, current);
+}
+
 JRT_BLOCK_ENTRY(void, Runtime1::monitorenter(JavaThread* current, oopDesc* obj, BasicObjectLock* lock))
 #ifndef PRODUCT
   if (PrintC1Statistics) {

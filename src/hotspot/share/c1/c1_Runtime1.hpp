@@ -132,6 +132,8 @@ static void init_AOTAddressTable(GrowableArray<address>& external_addresses);
   static void throw_array_store_exception(JavaThread* current, oopDesc* object);
 
   static void monitorenter(JavaThread* current, oopDesc* obj, BasicObjectLock* lock);
+  static void slow_arraycopy(JavaThread* current, oopDesc* src, jint src_pos,
+                            oopDesc* dest, jint dest_pos, jint length);
   static void monitorexit (JavaThread* current, BasicObjectLock* lock);
 
   static void deoptimize(JavaThread* current, jint trap_request);

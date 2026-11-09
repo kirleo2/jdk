@@ -62,7 +62,7 @@ int StubAssembler::call_RT(Register oop_result1, Register metadata_result, addre
   align_stack = (stub_id() == (int)StubId::c1_handle_exception_from_callee_id);
 
   mov(c_rarg0, thread);
-  set_num_rt_args(0); // Nothing on stack
+  set_num_rt_args(0); // Outgoing arguments are included in the saved-register frame.
 
   int call_offset = -1;
   if (!align_stack) {
@@ -173,6 +173,35 @@ int StubAssembler::call_RT(Register oop_result1, Register metadata_result, addre
 }
 
 
+int StubAssembler::call_RT(Register oop_result1, Register metadata_result, address entry,
+                           Register arg1, Register arg2, Register arg3, Register arg4, Register arg5) {
+  // Map the thread and five word-sized integer arguments to the native convention.
+  BasicType signature[6] = { T_ADDRESS, T_ADDRESS, T_ADDRESS, T_ADDRESS, T_ADDRESS, T_ADDRESS };
+  VMRegPair regs[6];
+  SharedRuntime::c_calling_convention(signature, regs, 6);
+  Register args[5] = { arg1, arg2, arg3, arg4, arg5 };
+
+  // Preserve all sources before assigning native argument registers, which may overlap.
+  for (int i = 4; i >= 0; i--) {
+    assert(args[i] != rsp, "argument must not be the stack pointer");
+    push(args[i]);
+  }
+  for (int i = 0; i < 5; i++) {
+    VMReg reg = regs[i + 1].first(); // The first native argument is the thread.
+    if (reg->is_Register()) {
+      pop(reg->as_Register());
+    } else {
+      assert(reg->is_stack(), "integer argument expected");
+      pop(rscratch1);
+      int offset = (reg->reg2stack() + SharedRuntime::out_preserve_stack_slots()) * VMRegImpl::stack_slot_size;
+      // Account for sources that have not yet been popped.
+      movptr(Address(rsp, offset + (4 - i) * BytesPerWord), rscratch1);
+    }
+  }
+  return call_RT(oop_result1, metadata_result, entry, 5);
+}
+
+
 // Implementation of StubFrame
 
 class StubFrame: public StackObj {
@@ -249,6 +278,9 @@ enum reg_save_layout {
   arg_reg_save_2, arg_reg_save_2H,                                                          // 8, 12
   arg_reg_save_3, arg_reg_save_3H,                                                          // 16, 20
   arg_reg_save_4, arg_reg_save_4H,                                                          // 24, 28
+  // Reserve two additional words for native stack arguments, keeping the frame aligned.
+  arg_stack_save_1, arg_stack_save_1H,
+  arg_stack_save_2, arg_stack_save_2H,
 #endif // _WIN64
   xmm_regs_as_doubles_off,                                                                  // 32
   float_regs_as_doubles_off = xmm_regs_as_doubles_off + xmm_regs_as_doubles_size_in_slots,  // 160
@@ -290,7 +322,7 @@ enum reg_save_layout {
 static OopMap* generate_oop_map(StubAssembler* sasm, int num_rt_args,
                                 bool save_fpu_registers = true) {
 
-  // In 64bit all the args are in regs so there are no additional stack slots
+  // Outgoing runtime arguments, including Windows stack arguments, are reserved in reg_save_layout.
   num_rt_args = 0;
   assert((reg_save_frame_size * VMRegImpl::stack_slot_size) % 16 == 0, "must be 16 byte aligned");
   int frame_size_in_slots = reg_save_frame_size + num_rt_args; // args + thread
@@ -1261,6 +1293,25 @@ OopMapSet* Runtime1::generate_code_for(StubId id, StubAssembler* sasm) {
 
         __ bind(done);
         __ ret(0);
+      }
+      break;
+
+    case StubId::c1_slow_arraycopy_id:
+      {
+        StubFrame f(sasm, "slow_arraycopy", dont_gc_arguments);
+        OopMap* map = save_live_registers(sasm, 6 /* thread and five arraycopy arguments */);
+
+        f.load_argument(0, rax); // src
+        f.load_argument(1, rbx); // src_pos
+        f.load_argument(2, rcx); // dest
+        f.load_argument(3, rdx); // dest_pos
+        f.load_argument(4, rsi); // length
+        int call_offset = __ call_RT(noreg, noreg, CAST_FROM_FN_PTR(address, slow_arraycopy),
+                                    rax, rbx, rcx, rdx, rsi);
+
+        oop_maps = new OopMapSet();
+        oop_maps->add_gc_map(call_offset, map);
+        restore_live_registers(sasm);
       }
       break;
 
